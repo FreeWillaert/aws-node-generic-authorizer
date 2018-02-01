@@ -1,0 +1,16 @@
+{
+  "name": "aws-node-generic-authorizer",
+  "version": "0.0.1",
+  "description": "Authorize your API Gateway with either Auth0 or Cognito RS256 tokens.",
+  "license": "MIT",
+  "dependencies": {
+    "jsonwebtoken": "^7.1.9",
+    "jwk-to-pem": "^1.2.6",
+    "request": "^2.82.0"
+  },
+  "author": "Shahzeb Khan",
+  "main": "auth.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}
