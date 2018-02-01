@@ -1,30 +1,38 @@
 'use strict';
 
-const jwk = require('jsonwebtoken');
+console.log("Loading...");
+
+const path = require('path');
+const jwt = require('jsonwebtoken');
 const jwkToPem = require('jwk-to-pem');
 const request = require('request');
 
-// For Auth0:       https://<project>.auth0.com/
-// refer to:        http://bit.ly/2hoeRXk
-// For AWS Cognito: https://cognito-idp.<region>.amazonaws.com/<user pool id>/
-// refer to:        http://amzn.to/2fo77UI
-const iss = 'https://<url>.com/';
+// TODO: BETTER USE .well-known/openid-configuration endpoint for real.
+const ISSUER = process.env.ISSUER;
+const JWKS_SUFFIX = process.env.JWKS_SUFFIX;
+const separator = (ISSUER.endsWith('/') || JWKS_SUFFIX.startsWith('/')) ? '' : '/';
+const JWKS_URI = ISSUER + separator + JWKS_SUFFIX;
+console.log("JWKS URI: " + JWKS_URI);
 
 // Generate policy to allow this user on this API:
 const generatePolicy = (principalId, effect, resource) => {
-  const authResponse = {};
+  const authResponse: any = {};
   authResponse.principalId = principalId;
   if (effect && resource) {
-    const policyDocument = {};
+    const policyDocument: any = {};
     policyDocument.Version = '2012-10-17';
+    
     policyDocument.Statement = [];
-    const statementOne = {};
+    const statementOne: any = {};
     statementOne.Action = 'execute-api:Invoke';
     statementOne.Effect = effect;
     statementOne.Resource = resource;
     policyDocument.Statement[0] = statementOne;
     authResponse.policyDocument = policyDocument;
   }
+
+  console.log("Generated policy:" + JSON.stringify(authResponse));
+
   return authResponse;
 };
 
@@ -36,7 +44,7 @@ module.exports.authorize = (event, context, cb) => {
     const token = event.authorizationToken.substring(7);
     // Make a request to the iss + .well-known/jwks.json URL:
     request(
-      { url: `${iss}.well-known/jwks.json`, json: true },
+      { url: JWKS_URI, json: true },
       (error, response, body) => {
         if (error || response.statusCode !== 200) {
           console.log('Request error:', error);
@@ -53,7 +61,7 @@ module.exports.authorize = (event, context, cb) => {
         const pem = jwkToPem(jwkArray);
 
         // Verify the token:
-        jwk.verify(token, pem, { issuer: iss }, (err, decoded) => {
+        jwt.verify(token, pem, { issuer: ISSUER }, (err, decoded) => {
           if (err) {
             console.log('Unauthorized user:', err.message);
             cb('Unauthorized');

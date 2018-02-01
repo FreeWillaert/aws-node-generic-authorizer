@@ -3,7 +3,13 @@ service: aws-node-generic-authorizer
 
 provider:
   name: aws
-  runtime: nodejs4.3
+  runtime: nodejs6.10
+  timeout: 15
+  region: ${opt:region}
+  stage: ${opt:stage}
+  profile: ${opt:profile}
+  memorySize: 256
+  cfLogs: true
 
 functions:
   publicEndpoint:
@@ -12,7 +18,6 @@ functions:
       - http:
           path: api/public
           method: get
-          integration: lambda
           cors: true
   auth:
     handler: auth.authorize
@@ -32,3 +37,6 @@ functions:
               - Authorization
               - X-Api-Key
               - X-Amz-Security-Token
+
+# plugins:
+#   - serverless-plugin-include-dependencies
