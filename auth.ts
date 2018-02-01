@@ -1,18 +1,59 @@
 'use strict';
 
-console.log("Loading...");
+import * as _ from 'lodash';
+import * as jwt from 'jsonwebtoken';
 
 const path = require('path');
-const jwt = require('jsonwebtoken');
 const jwkToPem = require('jwk-to-pem');
 const request = require('request');
 
-// TODO: BETTER USE .well-known/openid-configuration endpoint for real.
-const ISSUER = process.env.ISSUER;
-const JWKS_SUFFIX = process.env.JWKS_SUFFIX;
-const separator = (ISSUER.endsWith('/') || JWKS_SUFFIX.startsWith('/')) ? '' : '/';
-const JWKS_URI = ISSUER + separator + JWKS_SUFFIX;
-console.log("JWKS URI: " + JWKS_URI);
+// Reusable Authorizer function, set on `authorizer` field in serverless.yml
+module.exports.authorize = (event, context, cb) => {
+  console.log('Auth function invoked');
+
+  const issuer = getIssuer();
+  const jwksUri = composeJwksUri(issuer);
+
+  if (event.authorizationToken) {
+    // Remove 'bearer ' from token:
+    const token = event.authorizationToken.substring(7);
+
+    request(
+      { url: jwksUri, json: true },
+      (error, response, body) => {
+        if (error || response.statusCode !== 200) {
+          console.log('Request error:', error);
+          cb('Unauthorized');
+        }
+        const keys = body.keys;
+        // Based on the JSON of `jwks` create a Pem:
+
+        // Lookup the key in the keys collection by kid; take the first item from the array if no kid available.
+        const decodedJwt: any = jwt.decode(token, { complete: true});
+        const tokenkid = decodedJwt.header && decodedJwt.header.kid;
+
+        let key = keys[0];
+        if(tokenkid) {
+          key = _.filter(keys, k => k.kid === tokenkid)[0];
+        }
+        
+        const pem = jwkToPem(key);
+
+        // Verify the token:
+        jwt.verify(token, pem, { issuer }, (err, verifiedJwt: any) => {
+          if (err) {
+            console.log('Unauthorized user:', err.message);
+            cb('Unauthorized');
+          } else {
+            cb(null, generatePolicy(verifiedJwt.sub, 'Allow', event.methodArn));
+          }
+        });
+      });
+  } else {
+    console.log('No authorizationToken found in the header.');
+    cb('Unauthorized');
+  }
+};
 
 // Generate policy to allow this user on this API:
 const generatePolicy = (principalId, effect, resource) => {
@@ -36,42 +77,15 @@ const generatePolicy = (principalId, effect, resource) => {
   return authResponse;
 };
 
-// Reusable Authorizer function, set on `authorizer` field in serverless.yml
-module.exports.authorize = (event, context, cb) => {
-  console.log('Auth function invoked');
-  if (event.authorizationToken) {
-    // Remove 'bearer ' from token:
-    const token = event.authorizationToken.substring(7);
-    // Make a request to the iss + .well-known/jwks.json URL:
-    request(
-      { url: JWKS_URI, json: true },
-      (error, response, body) => {
-        if (error || response.statusCode !== 200) {
-          console.log('Request error:', error);
-          cb('Unauthorized');
-        }
-        const keys = body;
-        // Based on the JSON of `jwks` create a Pem:
-        const k = keys.keys[0];
-        const jwkArray = {
-          kty: k.kty,
-          n: k.n,
-          e: k.e,
-        };
-        const pem = jwkToPem(jwkArray);
+function getIssuer(): string {
+    // TODO: BETTER USE .well-known/openid-configuration endpoint for real.
+  return process.env.ISSUER;
+}
 
-        // Verify the token:
-        jwt.verify(token, pem, { issuer: ISSUER }, (err, decoded) => {
-          if (err) {
-            console.log('Unauthorized user:', err.message);
-            cb('Unauthorized');
-          } else {
-            cb(null, generatePolicy(decoded.sub, 'Allow', event.methodArn));
-          }
-        });
-      });
-  } else {
-    console.log('No authorizationToken found in the header.');
-    cb('Unauthorized');
-  }
-};
+function composeJwksUri(issuer: string): string {
+  const separator = (issuer.endsWith('/') || process.env.JWKS_SUFFIX.startsWith('/')) ? '' : '/';
+  const jwksUri = issuer + separator + process.env.JWKS_SUFFIX;
+  console.log("JWKS URI: " + jwksUri);
+
+  return jwksUri;
+}

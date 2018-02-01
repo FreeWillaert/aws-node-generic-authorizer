@@ -38,5 +38,6 @@ functions:
               - X-Api-Key
               - X-Amz-Security-Token
 
-# plugins:
-#   - serverless-plugin-include-dependencies
+plugins:
+  - serverless-offline
+  - serverless-plugin-include-dependencies
