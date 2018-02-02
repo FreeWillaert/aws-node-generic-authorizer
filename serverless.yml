@@ -27,7 +27,12 @@ functions:
       - http:
           path: api/private
           method: get
-          authorizer: auth
+          authorizer:
+            name: auth
+            resultTtlInSeconds: 5 # TODO: Increase this after testing
+            identitySource: method.request.header.Authorization
+            # identityValidationExpression: someRegex
+            type: token
           cors:
             origins:
               - '*'

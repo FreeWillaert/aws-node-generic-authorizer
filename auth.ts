@@ -18,6 +18,9 @@ module.exports.authorize = (event, context, cb) => {
     // Remove 'bearer ' from token:
     const token = event.authorizationToken.substring(7);
 
+    // const authorizationHeader = _.filter(event.headers, (value, key) => key.toLowerCase() === "Authorization")[0];
+
+
     request(
       { url: jwksUri, json: true },
       (error, response, body) => {
@@ -40,12 +43,13 @@ module.exports.authorize = (event, context, cb) => {
         const pem = jwkToPem(key);
 
         // Verify the token:
+        // TODO: Check which JWT VerifyOptions to use: audience,...
         jwt.verify(token, pem, { issuer }, (err, verifiedJwt: any) => {
           if (err) {
             console.log('Unauthorized user:', err.message);
             cb('Unauthorized');
           } else {
-            cb(null, generatePolicy(verifiedJwt.sub, 'Allow', event.methodArn));
+            cb(null, generatePolicy(verifiedJwt.sub, 'Allow', event.methodArn, verifiedJwt));
           }
         });
       });
@@ -56,7 +60,7 @@ module.exports.authorize = (event, context, cb) => {
 };
 
 // Generate policy to allow this user on this API:
-const generatePolicy = (principalId, effect, resource) => {
+const generatePolicy = (principalId, effect, resource, userData: any = null) => {
   const authResponse: any = {};
   authResponse.principalId = principalId;
   if (effect && resource) {
@@ -70,6 +74,10 @@ const generatePolicy = (principalId, effect, resource) => {
     statementOne.Resource = resource;
     policyDocument.Statement[0] = statementOne;
     authResponse.policyDocument = policyDocument;
+
+    authResponse.context = {
+      "userData": JSON.stringify(userData)
+    }
   }
 
   console.log("Generated policy:" + JSON.stringify(authResponse));
