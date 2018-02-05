@@ -1,99 +1,156 @@
 'use strict';
 
+// import * as path from 'path';
+
 import * as _ from 'lodash';
 import * as jwt from 'jsonwebtoken';
+import fetch from 'node-fetch';
+import * as cache from 'memory-cache';
 
-const path = require('path');
+import { lowerCaseFieldNames } from './util/lowerCaseFieldNames';
+
 const jwkToPem = require('jwk-to-pem');
 const request = require('request');
 
+let jwksCacheSeconds = 0;
+
+// TODO: Use an ILogger with a default implementation.
+
 // Reusable Authorizer function, set on `authorizer` field in serverless.yml
-module.exports.authorize = (event, context, cb) => {
-  console.log('Auth function invoked');
+module.exports.authorize = (event: IAuthorizerEvent, context, cb) => {
+  console.log("Handling event: " + JSON.stringify(event));
+  console.log("Handling context: " + JSON.stringify(context));
 
-  const issuer = getIssuer();
-  const jwksUri = composeJwksUri(issuer);
+  try {
+    const issuer = getIssuer();
+    const audience = getAudience(); // optional
+    const jwksUri = composeJwksUri(issuer);
+    setJwksCacheSeconds();
 
-  if (event.authorizationToken) {
-    // Remove 'bearer ' from token:
-    const token = event.authorizationToken.substring(7);
+    const jwtToken = getJwtToken(event);
 
-    // const authorizationHeader = _.filter(event.headers, (value, key) => key.toLowerCase() === "Authorization")[0];
+    if (!jwtToken) throw new Error('No JWT token found.');
 
+    console.log("JWT Token:" + jwtToken);
 
-    request(
-      { url: jwksUri, json: true },
-      (error, response, body) => {
-        if (error || response.statusCode !== 200) {
-          console.log('Request error:', error);
-          cb('Unauthorized');
-        }
-        const keys = body.keys;
-        // Based on the JSON of `jwks` create a Pem:
+    getJwks(jwksUri)
+      .then(jwks => {
 
-        // Lookup the key in the keys collection by kid; take the first item from the array if no kid available.
-        const decodedJwt: any = jwt.decode(token, { complete: true});
-        const tokenkid = decodedJwt.header && decodedJwt.header.kid;
+        const publicKey = getPublicKey(jwtToken, jwks);
 
-        let key = keys[0];
-        if(tokenkid) {
-          key = _.filter(keys, k => k.kid === tokenkid)[0];
-        }
-        
-        const pem = jwkToPem(key);
+        const verifiedJwt: any = jwt.verify(jwtToken, publicKey, { issuer, audience });
 
-        // Verify the token:
-        // TODO: Check which JWT VerifyOptions to use: audience,...
-        jwt.verify(token, pem, { issuer }, (err, verifiedJwt: any) => {
-          if (err) {
-            console.log('Unauthorized user:', err.message);
-            cb('Unauthorized');
-          } else {
-            cb(null, generatePolicy(verifiedJwt.sub, 'Allow', event.methodArn, verifiedJwt));
-          }
-        });
+        cb(null, generatePolicy(verifiedJwt.sub, 'Allow', event.methodArn, verifiedJwt));
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        cb('Unauthorized');
       });
-  } else {
-    console.log('No authorizationToken found in the header.');
+  } catch (error) {
+    console.error('Error:', error);
     cb('Unauthorized');
   }
 };
 
 // Generate policy to allow this user on this API:
-const generatePolicy = (principalId, effect, resource, userData: any = null) => {
-  const authResponse: any = {};
-  authResponse.principalId = principalId;
-  if (effect && resource) {
-    const policyDocument: any = {};
-    policyDocument.Version = '2012-10-17';
-    
-    policyDocument.Statement = [];
-    const statementOne: any = {};
-    statementOne.Action = 'execute-api:Invoke';
-    statementOne.Effect = effect;
-    statementOne.Resource = resource;
-    policyDocument.Statement[0] = statementOne;
-    authResponse.policyDocument = policyDocument;
+function generatePolicy(principalId: string, effect: string, resource: string, userData: any = null): IAuthorizerResponse {
+  if (!effect || !resource) throw new Error("Effect and Resource are required.");
 
-    authResponse.context = {
+  const authorizerResponse: IAuthorizerResponse = {
+    principalId: principalId,
+    policyDocument: {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Action: 'execute-api:Invoke',
+          Effect: effect,
+          Resource: resource
+        }
+      ]
+    },
+    context: {
       "userData": JSON.stringify(userData)
     }
-  }
+  };
 
-  console.log("Generated policy:" + JSON.stringify(authResponse));
+  console.log("Generated response:" + JSON.stringify(authorizerResponse));
 
-  return authResponse;
+  return authorizerResponse;
 };
 
+function getPublicKey(token: string, jwks: any) {
+  // Lookup the key in the keys collection by kid; take the first item from the array if no kid available.
+  const decodedJwt: any = jwt.decode(token, { complete: true });
+  const tokenkid = decodedJwt.header && decodedJwt.header.kid;
+
+  let key = jwks[0];
+  if (tokenkid) {
+    key = _.filter(jwks, k => k.kid === tokenkid)[0];
+  }
+
+  return jwkToPem(key);
+}
+
+function getJwtToken(event: IAuthorizerEvent) {
+
+  let authorizationHeader = event.authorizationToken;
+
+  if (!authorizationHeader) {
+    lowerCaseFieldNames(event.headers);
+    authorizationHeader = event.headers && event.headers.authorization;
+  }
+
+  if (!authorizationHeader) throw new Error("No Authorization Header found.");
+
+  // Remove 'bearer ' from header value:
+  return authorizationHeader.substring(7);
+}
+
 function getIssuer(): string {
-    // TODO: BETTER USE .well-known/openid-configuration endpoint for real.
   return process.env.ISSUER;
 }
 
+function getJwksCacheSeconds(): number {
+  return (process.env.JWKS_CACHE_SECONDS) ? +process.env.JWKS_CACHE_SECONDS : null;
+}
+
+function setJwksCacheSeconds() {
+  jwksCacheSeconds = getJwksCacheSeconds() || jwksCacheSeconds;
+}
+
+function getAudience(): string {
+  return process.env.AUDIENCE;
+}
+
 function composeJwksUri(issuer: string): string {
+
+  if (!issuer) throw new Error("No issuer.");
+
   const separator = (issuer.endsWith('/') || process.env.JWKS_SUFFIX.startsWith('/')) ? '' : '/';
   const jwksUri = issuer + separator + process.env.JWKS_SUFFIX;
   console.log("JWKS URI: " + jwksUri);
 
   return jwksUri;
+}
+
+function getJwks(jwksUri: string): Promise<any> {
+
+  let jwks = cache.get(jwksUri);
+
+  if(jwks) return Promise.resolve(jwks);
+  
+  // TODO: BETTER USE .well-known/openid-configuration endpoint for real.
+  return fetch(jwksUri)
+    .then(res => {
+      if (res.status !== 200) throw new Error("Error getting JWKS: " + res.statusText);
+      return res.json();
+    })
+    .then(body => {
+      if (!body.keys) throw new Error("JWKS has no keys: " + JSON.stringify(body));
+      const jwks = body.keys;
+
+      cache.put(jwksUri, jwks, jwksCacheSeconds*1000);
+
+      return jwks;
+    });
 }
