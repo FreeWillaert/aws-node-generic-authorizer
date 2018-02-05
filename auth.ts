@@ -26,6 +26,7 @@ module.exports.authorize = (event: IAuthorizerEvent, context, cb) => {
     const audience = getAudience(); // optional
     const jwksUri = composeJwksUri(issuer);
     setJwksCacheSeconds();
+    const sharedKey = getSharedKey();
 
     const jwtToken = getJwtToken(event);
 
@@ -40,7 +41,7 @@ module.exports.authorize = (event: IAuthorizerEvent, context, cb) => {
 
         const verifiedJwt: any = jwt.verify(jwtToken, publicKey, { issuer, audience });
 
-        cb(null, generatePolicy(verifiedJwt.sub, 'Allow', event.methodArn, verifiedJwt));
+        cb(null, generatePolicy(verifiedJwt.sub, 'Allow', event.methodArn, verifiedJwt, sharedKey));
       })
       .catch(error => {
         console.error('Error:', error);
@@ -53,7 +54,7 @@ module.exports.authorize = (event: IAuthorizerEvent, context, cb) => {
 };
 
 // Generate policy to allow this user on this API:
-function generatePolicy(principalId: string, effect: string, resource: string, userData: any = null): IAuthorizerResponse {
+function generatePolicy(principalId: string, effect: string, resource: string, userData: any, sharedKey?: string): IAuthorizerResponse {
   if (!effect || !resource) throw new Error("Effect and Resource are required.");
 
   const authorizerResponse: IAuthorizerResponse = {
@@ -72,6 +73,11 @@ function generatePolicy(principalId: string, effect: string, resource: string, u
       "userData": JSON.stringify(userData)
     }
   };
+
+  if(sharedKey) {
+    // TODO: sharedKey name should be configurable?
+    authorizerResponse.context.sharedKey = sharedKey; // TODO: Test that this can be used with HTTP backends.
+  }
 
   console.log("Generated response:" + JSON.stringify(authorizerResponse));
 
@@ -120,6 +126,10 @@ function setJwksCacheSeconds() {
 
 function getAudience(): string {
   return process.env.AUDIENCE;
+}
+
+function getSharedKey(): string {
+  return process.env.SHARED_KEY;
 }
 
 function composeJwksUri(issuer: string): string {
